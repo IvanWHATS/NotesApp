@@ -385,7 +385,7 @@ class EditNoteViewModel @AssistedInject constructor(
     private suspend fun saveIfNeeded() {
         val state = _state.value as? EditNoteScreenState.Editing ?: return
         if (state.note == lastSavedNote) return
-        if (state.isSaveEnabled)
+        if (!state.isSaveEnabled) return //TODO("Error popup")
         state.run {
             val content = note.content.filter {
                 it !is ContentItem.Text || it.text.isNotBlank()
