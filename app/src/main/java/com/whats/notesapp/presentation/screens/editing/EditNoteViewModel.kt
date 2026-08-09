@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -54,6 +55,9 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private val _events = Channel<EditNoteEvent>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
+
+    private val noteHistory = History<Note>()
+
 
     init {
         loadNote()
@@ -96,8 +100,7 @@ class EditNoteViewModel @AssistedInject constructor(
         viewModelScope.launch {
             val contentFlow =
                 _state
-                    .map { (it as? EditNoteScreenState.Editing)?.note?.content }
-                    .filterNotNull()
+                    .mapNotNull { (it as? EditNoteScreenState.Editing)?.note?.content }
                     .distinctUntilChanged()
 
             val queryFlow =
@@ -130,12 +133,7 @@ class EditNoteViewModel @AssistedInject constructor(
                     return@collectLatest
                 }
 
-                val matches =
-                    if (query.isBlank()) {
-                        emptyList()
-                    } else {
-                        SearchTextMatcher.getTextMatches(content, query)
-                    }
+                val matches = SearchTextMatcher.getTextMatches(content, query)
 
                 val activeIndex =
                     if (matches.isNotEmpty()) 0 else null
@@ -164,11 +162,11 @@ class EditNoteViewModel @AssistedInject constructor(
     private fun observeSelectedMatch() {
         viewModelScope.launch {
             _state
-                .map {
-                    val searchState =
-                        (it as? EditNoteScreenState.Editing)?.searchState as? SearchState.Active
-
-                    searchState?.activeMatchIndex
+                .mapNotNull { state ->
+                    (state as? EditNoteScreenState.Editing)
+                        ?.searchState
+                        ?.let { it as? SearchState.Active }
+                        ?.activeMatchIndex
                 }
                 .distinctUntilChanged()
                 .collectLatest { activeIndex ->
