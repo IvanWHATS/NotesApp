@@ -12,6 +12,7 @@ fun List<ContentItem>.toUiContent(): List<ContentItemUiModel> {
 
     val currentImageGroupUrls = mutableListOf<String>()
     val currentImageGroupIndexes = mutableListOf<Int>()
+    val currentImageGroupIds = mutableListOf<String>()
 
     fun flushImageGroup() {
         if (currentImageGroupIndexes.isNotEmpty()) {
@@ -19,12 +20,13 @@ fun List<ContentItem>.toUiContent(): List<ContentItemUiModel> {
                 ContentItemUiModel.ImageGroup(
                     urls = currentImageGroupUrls.toList(),
                     indexes = currentImageGroupIndexes.toList(),
-                    stableKey = UUID.randomUUID().toString()
+                    stableKey = currentImageGroupIds.first()
                 )
             )
 
             currentImageGroupUrls.clear()
             currentImageGroupIndexes.clear()
+            currentImageGroupIds.clear()
         }
     }
 
@@ -33,6 +35,7 @@ fun List<ContentItem>.toUiContent(): List<ContentItemUiModel> {
             is ContentItem.Image -> {
                 currentImageGroupUrls.add(contentItem.url)
                 currentImageGroupIndexes.add(index)
+                currentImageGroupIds.add(contentItem.id)
             }
 
             is ContentItem.Text -> {
@@ -41,7 +44,7 @@ fun List<ContentItem>.toUiContent(): List<ContentItemUiModel> {
                     ContentItemUiModel.Text(
                         text = contentItem.text,
                         index = index,
-                        stableKey = UUID.randomUUID().toString(),
+                        stableKey = contentItem.id,
                     )
                 )
             }
