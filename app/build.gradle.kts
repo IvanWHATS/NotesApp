@@ -8,6 +8,12 @@ plugins {
     alias(libs.plugins.google.hilt.android)
 }
 
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xcontext-sensitive-resolution")
+    }
+}
+
 android {
     namespace = "com.whats.notesapp"
     compileSdk {
@@ -42,10 +48,10 @@ android {
     buildFeatures {
         compose = true
     }
+}
 
-    room {
-        schemaDirectory("$projectDir/schemas")
-    }
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 dependencies {

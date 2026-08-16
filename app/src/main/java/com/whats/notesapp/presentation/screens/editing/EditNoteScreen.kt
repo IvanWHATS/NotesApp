@@ -32,7 +32,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Notes
-import androidx.compose.material.icons.filled.MoreVert
+ import androidx.compose.material.icons.automirrored.filled.Redo
+ import androidx.compose.material.icons.automirrored.filled.Undo
+ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material3.BottomAppBar
@@ -123,7 +125,7 @@ fun EditNoteScreenContent(
     onAction: (EditNoteScreenAction) -> Unit
 ) {
     when (state) {
-        is EditNoteScreenState.Editing -> {
+        is Editing -> {
 
             BackHandler(enabled = state.searchState is SearchState.Active) {
                 if (state.searchState is SearchState.Active) {
@@ -140,12 +142,12 @@ fun EditNoteScreenContent(
                 contentWindowInsets = WindowInsets.safeDrawing,
                 topBar = {
                     when(state.searchState) {
-                        is SearchState.Active ->
+                        is Active ->
                             SearchTopAppBar(
                                 searchState = state.searchState,
                                 onAction = onAction
                             )
-                        SearchState.Inactive ->
+                        Inactive ->
                             EditingTopAppBar(
                                 state = state,
                                 onOpenBackgroundPicker = { showBottomSheet = true },
@@ -155,12 +157,12 @@ fun EditNoteScreenContent(
                 },
                 bottomBar = {
                     when(state.searchState) {
-                        is SearchState.Active ->
+                        is Active ->
                             SearchBottomAppBar(
                                 searchState = state.searchState,
                                 onAction = onAction
                             )
-                        SearchState.Inactive ->
+                        Inactive ->
                             EditingBottomAppBar(
                                 state = state,
                                 onAction = onAction
@@ -173,7 +175,7 @@ fun EditNoteScreenContent(
 
                 val listState = rememberLazyListState()
 
-                val currentMatch = (state.searchState as? SearchState.Active)?.currentMatch
+                val currentMatch = (state.searchState as? Active)?.currentMatch
 
                 LaunchedEffect(currentMatch, state.uiContent) {
                     if (currentMatch == null) return@LaunchedEffect
@@ -300,11 +302,10 @@ fun EditNoteScreenContent(
                         )
                     }
                 }
-
             }
         }
 
-        EditNoteScreenState.Loading -> {
+        Loading -> {
 
         }
     }
@@ -395,7 +396,10 @@ private fun BackgroundColorPicker(
             )
     ) {
         Icon(
-            modifier = Modifier.align(Alignment.Center).fillMaxSize().padding(12.dp),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxSize()
+                .padding(12.dp),
             imageVector = Icons.AutoMirrored.Filled.Notes,
             contentDescription = "",
             tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -432,7 +436,6 @@ private fun EditingTopAppBar(
     onAction: (EditNoteScreenAction) -> Unit
 ) {
     TopAppBar(
-        title = {},
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = Color.Transparent,
             navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
@@ -449,6 +452,28 @@ private fun EditingTopAppBar(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back"
             )
+        },
+        title = {
+            // Ключевой момент: Row занимает всю ширину и центрирует содержимое
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { onAction(UndoChange) },
+                    enabled = state.canUndo
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                }
+
+                IconButton(
+                    onClick = { onAction(RedoChange) },
+                    enabled = state.canRedo
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                }
+            }
         },
         actions = {
             DropdownMenuButton(

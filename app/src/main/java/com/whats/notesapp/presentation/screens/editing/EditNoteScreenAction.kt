@@ -32,4 +32,8 @@ sealed interface EditNoteScreenAction {
     data object SelectNextMatch : EditNoteScreenAction
 
     data object SelectPreviousMatch : EditNoteScreenAction
+
+    data object UndoChange : EditNoteScreenAction
+
+    data object RedoChange : EditNoteScreenAction
 }
