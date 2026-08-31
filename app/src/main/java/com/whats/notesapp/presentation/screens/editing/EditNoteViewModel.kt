@@ -53,7 +53,7 @@ class EditNoteViewModel @AssistedInject constructor(
     val state = _state.asStateFlow()
 
 
-    private val _events = Channel<EditNoteEvent>(Channel.BUFFERED)
+    private val _events = Channel<EditNoteEvent>(Channel.CONFLATED)
     val events = _events.receiveAsFlow()
 
     private val editFlow = MutableSharedFlow<Unit>(
@@ -297,6 +297,66 @@ class EditNoteViewModel @AssistedInject constructor(
             Title -> editFlow.tryEmit(Unit)
             MetadataOnly -> {}
         }
+    }
+
+    private fun determineFocusTarget(
+        oldNote: Note,
+        newNote: Note
+    ): FocusTarget? {
+        val oldContent = oldNote.content.associateBy { it.id }
+        val newContent = newNote.content.associateBy { it.id }
+
+        // 1. Добавлен блок? → фокус на него
+        val added = newNote.content.firstOrNull { it.id !in oldContent }
+        if (added != null) {
+            return when (added) {
+                is ContentItem.Text -> FocusTarget.TextBlock(
+                    id = added.id,
+                    cursorPosition = added.text.length
+                )
+                is ContentItem.Image -> FocusTarget.ImageBlock(added.id)
+            }
+        }
+
+        // 2. Удалён блок? → фокус на соседний (предыдущий или следующий)
+        val removed = oldNote.content.firstOrNull { it.id !in newContent }
+        if (removed != null) {
+            val removedIndex = oldNote.content.indexOfFirst { it.id == removed.id }
+            // Сначала смотрим на тот же индекс, если нет — на последний
+            val target = newNote.content.getOrNull(removedIndex)
+                ?: newNote.content.getOrNull(removedIndex - 1)
+                ?: newNote.content.lastOrNull()
+
+            return when (target) {
+                is ContentItem.Text -> FocusTarget.TextBlock(target.id, target.text.length)
+                is ContentItem.Image -> FocusTarget.ImageBlock(target.id)
+                null -> null
+            }
+        }
+
+        // 3. Изменился существующий блок? → фокус на него
+        val changed = newNote.content.firstOrNull { newItem ->
+            oldContent[newItem.id] != newItem
+        }
+        if (changed != null) {
+            return when (changed) {
+                is ContentItem.Text -> {
+                    val oldText = (oldContent[changed.id] as? ContentItem.Text)?.text ?: ""
+                    val newText = changed.text
+                    // Если текст дописывался в конец — ставим курсор в конец
+                    val cursor = if (newText.startsWith(oldText)) newText.length else newText.length
+                    FocusTarget.TextBlock(changed.id, cursor)
+                }
+                is ContentItem.Image -> FocusTarget.ImageBlock(changed.id)
+            }
+        }
+
+        // 4. Изменился title?
+        if (oldNote.title != newNote.title) {
+            return FocusTarget.Title(newNote.title.length)
+        }
+
+        return null
     }
 
     private fun restoreNote(note: Note) {
@@ -571,19 +631,23 @@ class EditNoteViewModel @AssistedInject constructor(
     private fun undo() {
         commitPendingEdit()
 
-        val previous = history.undo()
-            ?: return
+        val currentNote = (_state.value as? Editing)?.note ?: return
+        val restoredNote = history.undo() ?: return
 
-        restoreNote(previous)
+        val focusTarget = determineFocusTarget(currentNote, restoredNote)
+        restoreNote(restoredNote)
+        _events.trySend(EditNoteEvent.RequestFocus(focusTarget))
     }
 
     private fun redo() {
         commitPendingEdit()
 
-        val nextNote = history.redo()
-            ?: return
+        val currentNote = (_state.value as? Editing)?.note ?: return
+        val restoredNote = history.redo() ?: return
 
-        restoreNote(nextNote)
+        val focusTarget = determineFocusTarget(currentNote, restoredNote)
+        restoreNote(restoredNote)
+        _events.trySend(EditNoteEvent.RequestFocus(focusTarget))
     }
 
     private fun SearchState.Active.nextMatchIndex(): Int =

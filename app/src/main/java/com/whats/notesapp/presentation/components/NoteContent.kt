@@ -26,6 +26,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
@@ -37,6 +39,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import com.whats.notesapp.presentation.screens.editing.FocusTarget
 import kotlinx.coroutines.delay
 
 
@@ -70,7 +73,7 @@ fun ImageContent(
 ) {
     Box(
         modifier = modifier.heightIn(max = 500.dp)
-        ) {
+    ) {
         AsyncImage(
             model = imageUrl,
             contentDescription = null,
@@ -79,7 +82,7 @@ fun ImageContent(
                 .clip(RoundedCornerShape(10.dp)),
             contentScale = ContentScale.Fit,
 
-        )
+            )
         Icon(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -102,6 +105,10 @@ fun SearchableTextContent(
     text: String,
     searchMatches: List<IntRange> = emptyList(), // Пусто, если поиска нет
     activeMatchRange: IntRange? = null,
+
+    focusTarget: FocusTarget.TextBlock? = null,
+    onFocusHandled: () -> Unit,
+
     onTextChanged: (String) -> Unit
 ) {
 
@@ -139,7 +146,15 @@ fun SearchableTextContent(
 
     var isFocused by remember { mutableStateOf(false) }
 
+    val focusRequester = remember {
+        FocusRequester()
+    }
+
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
+
+    var selection by remember {
+        mutableStateOf(TextRange(text.length))
+    }
 
     LaunchedEffect(isFocused) {
         if (isFocused) {
@@ -148,8 +163,18 @@ fun SearchableTextContent(
         }
     }
 
-    var selection by remember {
-        mutableStateOf(TextRange(text.length))
+    LaunchedEffect(focusTarget) {
+        val target = focusTarget ?: return@LaunchedEffect
+
+        val position = (
+                target.cursorPosition ?: text.length
+                ).coerceIn(0, text.length)
+
+        selection = TextRange(position)
+
+        focusRequester.requestFocus()
+
+        onFocusHandled()
     }
 
     val textFieldValue = remember(
@@ -174,7 +199,9 @@ fun SearchableTextContent(
             isFocused = true
             onTextChanged(newValue.text)
         },
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester)
             .bringIntoViewRequester(bringIntoViewRequester)
             .onFocusChanged {
                 isFocused = it.isFocused
