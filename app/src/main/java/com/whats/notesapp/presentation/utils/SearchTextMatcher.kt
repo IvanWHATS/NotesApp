@@ -9,7 +9,7 @@ object SearchTextMatcher {
         noteContent: List<ContentItem>,
         query: String
     ): List<TextMatch> {
-        if (query.isEmpty()) return emptyList()
+        if (query.isBlank()) return emptyList()
 
         return noteContent.flatMapIndexed { index, item ->
             if (item is ContentItem.Text) {
@@ -26,7 +26,7 @@ object SearchTextMatcher {
     }
 
     private fun findCharRanges(text: String, query: String): List<IntRange> {
-        if (query.isEmpty()) return emptyList()
+        if (query.isBlank()) return emptyList()
 
         val ranges = mutableListOf<IntRange>()
         var index = 0

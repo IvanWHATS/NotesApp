@@ -2,7 +2,7 @@
 
 package com.whats.notesapp.presentation.screens.editing
 
- import androidx.activity.compose.BackHandler
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -32,6 +32,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Notes
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Save
@@ -56,7 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
- import androidx.compose.runtime.setValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -103,15 +105,26 @@ fun EditNoteScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    var focusTarget by remember {
+        mutableStateOf<FocusTarget?>(null)
+    }
+
     ObserveAsEvents(viewModel.events) { event ->
-        when(event) {
+        when (event) {
             EditNoteEvent.NavigateBack -> onFinished()
+            is EditNoteEvent.RequestFocus -> {
+                focusTarget = event.target
+            }
         }
     }
 
     EditNoteScreenContent(
         modifier = modifier,
         state = state,
+        focusTarget = focusTarget,
+        onFocusHandled = {
+            focusTarget = null
+        },
         onAction = viewModel::onAction
     )
 }
@@ -120,10 +133,12 @@ fun EditNoteScreen(
 fun EditNoteScreenContent(
     modifier: Modifier = Modifier,
     state: EditNoteScreenState,
-    onAction: (EditNoteScreenAction) -> Unit
+    focusTarget: FocusTarget?,
+    onFocusHandled: () -> Unit,
+    onAction: (EditNoteScreenAction) -> Unit,
 ) {
     when (state) {
-        is EditNoteScreenState.Editing -> {
+        is Editing -> {
 
             BackHandler(enabled = state.searchState is SearchState.Active) {
                 if (state.searchState is SearchState.Active) {
@@ -139,13 +154,14 @@ fun EditNoteScreenContent(
                 modifier = modifier,
                 contentWindowInsets = WindowInsets.safeDrawing,
                 topBar = {
-                    when(state.searchState) {
-                        is SearchState.Active ->
+                    when (state.searchState) {
+                        is Active ->
                             SearchTopAppBar(
                                 searchState = state.searchState,
                                 onAction = onAction
                             )
-                        SearchState.Inactive ->
+
+                        Inactive ->
                             EditingTopAppBar(
                                 state = state,
                                 onOpenBackgroundPicker = { showBottomSheet = true },
@@ -154,13 +170,14 @@ fun EditNoteScreenContent(
                     }
                 },
                 bottomBar = {
-                    when(state.searchState) {
-                        is SearchState.Active ->
+                    when (state.searchState) {
+                        is Active ->
                             SearchBottomAppBar(
                                 searchState = state.searchState,
                                 onAction = onAction
                             )
-                        SearchState.Inactive ->
+
+                        Inactive ->
                             EditingBottomAppBar(
                                 state = state,
                                 onAction = onAction
@@ -173,14 +190,14 @@ fun EditNoteScreenContent(
 
                 val listState = rememberLazyListState()
 
-                val currentMatch = (state.searchState as? SearchState.Active)?.currentMatch
+                val currentMatch = (state.searchState as? Active)?.currentMatch
 
                 LaunchedEffect(currentMatch, state.uiContent) {
                     if (currentMatch == null) return@LaunchedEffect
 
                     val uiContentIndex = state.uiContent.indexOfFirst { item ->
                         item is ContentItemUiModel.Text &&
-                        item.index == currentMatch.contentItemIndex
+                                item.index == currentMatch.contentItemIndex
                     }
 
                     if (uiContentIndex == -1) return@LaunchedEffect
@@ -189,6 +206,36 @@ fun EditNoteScreenContent(
                         index = uiContentIndex + HEADER_ITEMS_COUNT,
                         scrollOffset = -100
                     )
+                }
+
+                LaunchedEffect(focusTarget) {
+                    val target = focusTarget ?: return@LaunchedEffect
+
+                    when (target) {
+                        is FocusTarget.Title -> Unit
+
+                        is FocusTarget.TextBlock -> {
+                            val index = state.uiContent.indexOfFirst {
+                                it.stableKey == target.id
+                            }
+                            listState.animateScrollToItem(
+                                index = index + HEADER_ITEMS_COUNT,
+                                scrollOffset = -100
+                            )
+
+                            onFocusHandled()
+                        }
+
+                        is FocusTarget.ImageBlock -> {
+                            val index = state.uiContent.indexOfFirst {
+                                it.stableKey == target.id
+                            }
+                            listState.animateScrollToItem(
+                                index = index + HEADER_ITEMS_COUNT,
+                                scrollOffset = -100
+                            )
+                        }
+                    }
                 }
 
                 LazyColumn(
@@ -204,7 +251,7 @@ fun EditNoteScreenContent(
                     )
                 )
                 {
-                    item(key = "title"){
+                    item(key = "title") {
                         TextField(
                             modifier = Modifier
                                 .fillMaxWidth(),
@@ -232,7 +279,7 @@ fun EditNoteScreenContent(
                         )
                     }
 
-                    item(key = "meta"){
+                    item(key = "meta") {
                         Row(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -270,13 +317,29 @@ fun EditNoteScreenContent(
                             }
 
                             is ContentItemUiModel.Text -> {
+
+                                val target =
+                                    (focusTarget as? FocusTarget.TextBlock)
+                                        ?.takeIf { it.id == contentItem.stableKey }
+
+
                                 SearchableTextContent(
                                     modifier = Modifier.padding(horizontal = 8.dp),
                                     text = contentItem.text,
                                     searchMatches = contentItem.searchMatches, // Будет пустым, если нет матчей
                                     activeMatchRange = contentItem.activeMatchRange,
+
+                                    focusTarget = target,
+
+                                    onFocusHandled = onFocusHandled,
+
                                     onTextChanged = { newText ->
-                                        onAction(EditNoteScreenAction.InputContent(newText, contentItem.index))
+                                        onAction(
+                                            EditNoteScreenAction.InputContent(
+                                                newText,
+                                                contentItem.index
+                                            )
+                                        )
                                     }
                                 )
                             }
@@ -300,11 +363,10 @@ fun EditNoteScreenContent(
                         )
                     }
                 }
-
             }
         }
 
-        EditNoteScreenState.Loading -> {
+        Loading -> {
 
         }
     }
@@ -328,7 +390,7 @@ private fun BottomSheetBackgroundColorPickerContent(
             color = MaterialTheme.colorScheme.onSurface,
             text = "Background",
 
-        )
+            )
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
@@ -366,7 +428,7 @@ private fun BottomSheetBackgroundColorPickerContent(
 private fun BackgroundColorPicker(
     color: Color,
     isSelected: Boolean,
-    onSelect: ()-> Unit,
+    onSelect: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -395,7 +457,10 @@ private fun BackgroundColorPicker(
             )
     ) {
         Icon(
-            modifier = Modifier.align(Alignment.Center).fillMaxSize().padding(12.dp),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxSize()
+                .padding(12.dp),
             imageVector = Icons.AutoMirrored.Filled.Notes,
             contentDescription = "",
             tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -419,7 +484,7 @@ private fun BottomSheetBackgroundColorPickerPreview() {
                 searchState = SearchState.Inactive,
                 uiContent = listOf(),
             ),
-            onAction = {  }
+            onAction = { }
         )
     }
 
@@ -432,7 +497,6 @@ private fun EditingTopAppBar(
     onAction: (EditNoteScreenAction) -> Unit
 ) {
     TopAppBar(
-        title = {},
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = Color.Transparent,
             navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
@@ -449,6 +513,28 @@ private fun EditingTopAppBar(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back"
             )
+        },
+        title = {
+            // Ключевой момент: Row занимает всю ширину и центрирует содержимое
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { onAction(UndoChange) },
+                    enabled = state.canUndo
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                }
+
+                IconButton(
+                    onClick = { onAction(RedoChange) },
+                    enabled = state.canRedo
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                }
+            }
         },
         actions = {
             DropdownMenuButton(
@@ -666,8 +752,6 @@ private fun SearchBottomAppBar(
 }
 
 
-
-
 @Preview
 @Composable
 private fun EditNoteScreenPreview(
@@ -676,7 +760,6 @@ private fun EditNoteScreenPreview(
     NotesAppTheme {
         val previewContent = listOf(ContentItem.Text(LoremIpsum(20).values.first()))
         EditNoteScreenContent(
-            modifier = Modifier,
             state = EditNoteScreenState.Editing(
                 note = Note(
                     title = "",
@@ -688,7 +771,9 @@ private fun EditNoteScreenPreview(
                 searchState = SearchState.Inactive,
                 uiContent = previewContent.toUiContent(),
             ),
-            onAction = {}
+            onAction = {},
+            focusTarget = null,
+            onFocusHandled = { },
         )
     }
 }

@@ -21,6 +21,7 @@ import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -28,8 +29,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -47,41 +48,51 @@ class EditNoteViewModel @AssistedInject constructor(
     private var lastSavedNote: Note? = null
 
     private val _state = MutableStateFlow<EditNoteScreenState>(
-        EditNoteScreenState.Loading
+        Loading
     )
     val state = _state.asStateFlow()
 
 
-    private val _events = Channel<EditNoteEvent>(Channel.BUFFERED)
+    private val _events = Channel<EditNoteEvent>(Channel.CONFLATED)
     val events = _events.receiveAsFlow()
+
+    private val editFlow = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1
+    )
+
+    private val history = History<Note>()
+
+    //private var pendingHistoryNote: Note? = null
 
     init {
         loadNote()
-        observeUiContent()
+        observeEditableChanges()
+        observeSearchableContent()
         observeSelectedMatch()
     }
 
     private fun loadNote() {
         viewModelScope.launch {
+            val initialNote = noteId?.let {
+                getNoteUseCase(noteId).let {
+                    if (it.content.isEmpty() || it.content.last() !is Text)
+                        it.copy(content = it.content + ContentItem.Text(""))
+                    else it
+                }
+            } ?: Note(
+                title = "",
+                content = listOf(ContentItem.Text("")),
+                updatedAt = System.currentTimeMillis(),
+                backgroundColor = NoteBackgroundColor.Default,
+                isPinned = false
+            )
+            lastSavedNote = initialNote
+
+            history.push(initialNote)
+
+            val initialUiContent = initialNote.content.toUiContent()
+
             _state.update {
-                val initialNote = noteId?.let {
-                    getNoteUseCase(noteId).let {
-                        if (it.content.isEmpty() || it.content.last() !is ContentItem.Text)
-                            it.copy(content = it.content + ContentItem.Text(""))
-                        else it
-                    }
-                } ?: Note(
-                    title = "",
-                    content = listOf(ContentItem.Text("")),
-                    updatedAt = System.currentTimeMillis(),
-                    backgroundColor = NoteBackgroundColor.Default,
-                    isPinned = false
-                )
-
-                lastSavedNote = initialNote
-
-                val initialUiContent = initialNote.content.toUiContent()
-
                 EditNoteScreenState.Editing(
                     note = initialNote,
                     uiContent = initialUiContent
@@ -90,63 +101,48 @@ class EditNoteViewModel @AssistedInject constructor(
         }
     }
 
-
     @OptIn(FlowPreview::class)
-    private fun observeUiContent() {
+    private fun observeSearchableContent() {
         viewModelScope.launch {
             val contentFlow =
                 _state
-                    .map { (it as? EditNoteScreenState.Editing)?.note?.content }
-                    .filterNotNull()
+                    .mapNotNull { (it as? Editing)?.note?.content }
                     .distinctUntilChanged()
 
             val queryFlow =
                 _state
                     .map {
-                        (it as? EditNoteScreenState.Editing)
+                        (it as? Editing)
                             ?.searchState
                     }
                     .filterIsInstance<SearchState.Active>()
                     .map { it.query }
-                    .debounce { if (it.isBlank()) 0 else 300 }
+                    .debounce { if (it.isBlank()) 0 else 100 }
                     .distinctUntilChanged()
 
             combine(contentFlow, queryFlow) { content, query ->
                 content to query
             }.collectLatest { (content, query) ->
                 val currentState =
-                    _state.value as? EditNoteScreenState.Editing
+                    _state.value as? Editing
                         ?: return@collectLatest
 
-                val syncedUiContent =
-                    currentState.uiContent.syncText(content)
-
-                if (currentState.searchState !is SearchState.Active) {
-                    _state.update { state ->
-                        if (state is EditNoteScreenState.Editing) {
-                            state.copy(uiContent = syncedUiContent)
-                        } else state
-                    }
+                if (currentState.searchState !is Active) {
                     return@collectLatest
                 }
 
-                val matches =
-                    if (query.isBlank()) {
-                        emptyList()
-                    } else {
-                        SearchTextMatcher.getTextMatches(content, query)
-                    }
+                val matches = SearchTextMatcher.getTextMatches(content, query)
 
                 val activeIndex =
                     if (matches.isNotEmpty()) 0 else null
 
-                val searchedUiContent = syncedUiContent.applySearchHighlights(
+                val searchedUiContent = currentState.uiContent.applySearchHighlights(
                     searchMatches = matches,
                     activeMatchIndex = activeIndex
                 )
 
                 _state.update { state ->
-                    if (state is EditNoteScreenState.Editing) {
+                    if (state is Editing) {
                         state.copy(
                             uiContent = searchedUiContent,
                             searchState = SearchState.Active(
@@ -164,20 +160,20 @@ class EditNoteViewModel @AssistedInject constructor(
     private fun observeSelectedMatch() {
         viewModelScope.launch {
             _state
-                .map {
-                    val searchState =
-                        (it as? EditNoteScreenState.Editing)?.searchState as? SearchState.Active
-
-                    searchState?.activeMatchIndex
+                .mapNotNull { state ->
+                    (state as? Editing)
+                        ?.searchState
+                        ?.let { it as? Active }
+                        ?.activeMatchIndex
                 }
                 .distinctUntilChanged()
                 .collectLatest { activeIndex ->
 
                     val currentState =
-                        _state.value as? EditNoteScreenState.Editing ?: return@collectLatest
+                        _state.value as? Editing ?: return@collectLatest
 
                     val searchState =
-                        currentState.searchState as? SearchState.Active
+                        currentState.searchState as? Active
                             ?: return@collectLatest
 
                     val updatedUiContent =
@@ -187,11 +183,39 @@ class EditNoteViewModel @AssistedInject constructor(
                         )
 
                     _state.update {
-                        if (it is EditNoteScreenState.Editing) {
+                        if (it is Editing) {
                             it.copy(uiContent = updatedUiContent)
                         } else it
                     }
                 }
+        }
+    }
+
+    @OptIn(FlowPreview::class)
+    private fun observeEditableChanges() {
+        viewModelScope.launch {
+            editFlow
+                .debounce(500)
+                .collectLatest {
+                    commitPendingEdit()
+                }
+        }
+    }
+
+    private fun commitPendingEdit() {
+        val currentState = _state.value as? Editing ?: return
+
+        // Защита от мусора в стеке: пушим только если текст изменился
+        if (history.current != currentState.note) {
+            history.push(currentState.note)
+            _state.update { state ->
+                if (state is Editing) {
+                    state.copy(
+                        canUndo = history.canUndo,
+                        canRedo = history.canRedo
+                    )
+                } else state
+            }
         }
     }
 
@@ -225,8 +249,8 @@ class EditNoteViewModel @AssistedInject constructor(
 
         return map { uiModel ->
             when (uiModel) {
-                is ContentItemUiModel.ImageGroup -> uiModel
-                is ContentItemUiModel.Text -> {
+                is ImageGroup -> uiModel
+                is Text -> {
                     val textMatches =
                         matchesByIndex[uiModel.index]?.map { it.charRange } ?: emptyList()
                     val activeRange =
@@ -242,124 +266,218 @@ class EditNoteViewModel @AssistedInject constructor(
         }
     }
 
+    private enum class NoteUpdateType {
+        TextOnly,
+        StructureChanged,
+        Title,
+        MetadataOnly
+    }
+
+    private fun updateNote(
+        updateType: NoteUpdateType,
+        transform: (Note) -> Note
+    ) {
+        _state.update { state ->
+            if (state is Editing) {
+                val newNote = transform(state.note)
+                state.copy(
+                    note = newNote,
+                    uiContent = when (updateType) {
+                        TextOnly -> state.uiContent.syncText(newNote.content)
+                        StructureChanged -> newNote.content.toUiContent()
+                        Title -> state.uiContent
+                        MetadataOnly -> state.uiContent
+                    }
+                )
+            } else state
+        }
+        when (updateType) {
+            TextOnly,
+            StructureChanged,
+            Title -> editFlow.tryEmit(Unit)
+            MetadataOnly -> {}
+        }
+    }
+
+    private fun determineFocusTarget(
+        oldNote: Note,
+        newNote: Note
+    ): FocusTarget? {
+        val oldContent = oldNote.content.associateBy { it.id }
+        val newContent = newNote.content.associateBy { it.id }
+
+        // 1. Добавлен блок? → фокус на него
+        val added = newNote.content.firstOrNull { it.id !in oldContent }
+        if (added != null) {
+            return when (added) {
+                is ContentItem.Text -> FocusTarget.TextBlock(
+                    id = added.id,
+                    cursorPosition = added.text.length
+                )
+                is ContentItem.Image -> FocusTarget.ImageBlock(added.id)
+            }
+        }
+
+        // 2. Удалён блок? → фокус на соседний (предыдущий или следующий)
+        val removed = oldNote.content.firstOrNull { it.id !in newContent }
+        if (removed != null) {
+            val removedIndex = oldNote.content.indexOfFirst { it.id == removed.id }
+            // Сначала смотрим на тот же индекс, если нет — на последний
+            val target = newNote.content.getOrNull(removedIndex)
+                ?: newNote.content.getOrNull(removedIndex - 1)
+                ?: newNote.content.lastOrNull()
+
+            return when (target) {
+                is ContentItem.Text -> FocusTarget.TextBlock(target.id, target.text.length)
+                is ContentItem.Image -> FocusTarget.ImageBlock(target.id)
+                null -> null
+            }
+        }
+
+        // 3. Изменился существующий блок? → фокус на него
+        val changed = newNote.content.firstOrNull { newItem ->
+            oldContent[newItem.id] != newItem
+        }
+        if (changed != null) {
+            return when (changed) {
+                is ContentItem.Text -> {
+                    val oldText = (oldContent[changed.id] as? ContentItem.Text)?.text ?: ""
+                    val newText = changed.text
+                    // Если текст дописывался в конец — ставим курсор в конец
+                    val cursor = if (newText.startsWith(oldText)) newText.length else newText.length
+                    FocusTarget.TextBlock(changed.id, cursor)
+                }
+                is ContentItem.Image -> FocusTarget.ImageBlock(changed.id)
+            }
+        }
+
+        // 4. Изменился title?
+        if (oldNote.title != newNote.title) {
+            return FocusTarget.Title(newNote.title.length)
+        }
+
+        return null
+    }
+
+    private fun restoreNote(note: Note) {
+        _state.update { state ->
+            if (state is Editing) {
+                state.copy(
+                    note = note,
+                    uiContent = note.content.toUiContent(),
+                    canUndo = history.canUndo,
+                    canRedo = history.canRedo
+                )
+            } else {
+                state
+            }
+        }
+    }
 
     fun onAction(action: EditNoteScreenAction) {
         when (action) {
-            is EditNoteScreenAction.InputTitle -> updateTitle(action.title)
+            is InputTitle -> updateTitle(action.title)
 
-            is EditNoteScreenAction.InputContent -> updateContent(action.content, action.index)
+            is InputContent -> updateTextContent(action.content, action.index)
 
-            is EditNoteScreenAction.AddImage -> addImage(action.uri)
+            is AddImage -> addImage(action.uri)
 
-            is EditNoteScreenAction.DeleteImage -> deleteImage(action.index)
+            is DeleteImage -> deleteImage(action.index)
 
-            is EditNoteScreenAction.InputSearchQuery -> applySearch(action.query)
+            is InputSearchQuery -> applySearch(action.query)
 
-            is EditNoteScreenAction.ChangeBackground -> changeBackground(action.backgroundColor)
+            is ChangeBackground -> changeBackground(action.backgroundColor)
 
-            EditNoteScreenAction.SaveChanges -> viewModelScope.launch {
+            SaveChanges -> viewModelScope.launch {
                 saveIfNeeded()
             }
 
-            EditNoteScreenAction.DeleteNote -> deleteNote()
+            DeleteNote -> deleteNote()
 
-            EditNoteScreenAction.NavigateBack -> navigateBack()
+            NavigateBack -> navigateBack()
 
-            EditNoteScreenAction.SwitchPinStatus -> switchPinStatus()
+            SwitchPinStatus -> switchPinStatus()
 
-            EditNoteScreenAction.OpenSearch -> openSearch()
+            OpenSearch -> openSearch()
 
-            EditNoteScreenAction.CloseSearch -> closeSearch()
+            CloseSearch -> closeSearch()
 
-            EditNoteScreenAction.SelectNextMatch -> selectNextMatch()
+            SelectNextMatch -> selectNextMatch()
 
-            EditNoteScreenAction.SelectPreviousMatch -> selectPreviousMatch()
+            SelectPreviousMatch -> selectPreviousMatch()
+
+            UndoChange -> undo()
+
+            RedoChange -> redo()
         }
     }
 
     private fun updateTitle(title: String) {
-        _state.update { prevState ->
-            if (prevState is EditNoteScreenState.Editing) {
-                val newNote = prevState.note.copy(title = title)
-                prevState.copy(note = newNote)
-            } else {
-                prevState
-            }
-        }
+        updateNote(
+            Title
+        ) { note -> note.copy(title = title) }
     }
 
-    private fun updateContent(content: String, index: Int) {
-        _state.update { prevState ->
-            if (prevState is EditNoteScreenState.Editing) {
-                val newContent = prevState.note.content.mapIndexed { contentIndex, contentItem ->
-                    if (contentIndex == index && contentItem is ContentItem.Text) {
-                        contentItem.copy(text = content)
-                    } else {
-                        contentItem
-                    }
+    private fun updateTextContent(content: String, index: Int) {
+        updateNote(
+            TextOnly
+        ) { note ->
+            val newContent = note.content.mapIndexed { contentIndex, contentItem ->
+                if (contentIndex == index && contentItem is Text) {
+                    contentItem.copy(text = content)
+                } else {
+                    contentItem
                 }
-                val newNote = prevState.note.copy(content = newContent)
-                prevState.copy(note = newNote)
-            } else {
-                prevState
             }
+            val newNote = note.copy(content = newContent)
+            newNote
         }
     }
 
     private fun addImage(uri: Uri) {
-        _state.update { prevState ->
-            if (prevState is EditNoteScreenState.Editing) {
-                prevState.note.content.toMutableList().apply {
-                    if (lastOrNull() is ContentItem.Text &&
-                        (last() as ContentItem.Text).text.isBlank()
-                    ) {
-                        removeAt(lastIndex)
-                    }
-                    add(ContentItem.Image(uri.toString()))
-                    add(ContentItem.Text(""))
-                }.let {
-                    val newNote = prevState.note.copy(content = it)
-                    prevState.copy(
-                        note = newNote,
-                        uiContent = it.toUiContent()
-                    )
+        updateNote(
+            StructureChanged
+        ) { note ->
+            note.content.toMutableList().apply {
+                if (lastOrNull() is Text &&
+                    (last() as Text).text.isBlank()
+                ) {
+                    removeAt(lastIndex)
                 }
-            } else {
-                prevState
+                add(ContentItem.Image(uri.toString()))
+                add(ContentItem.Text(""))
+            }.let {
+                val newNote = note.copy(content = it)
+                newNote
             }
         }
     }
 
     private fun deleteImage(index: Int) {
-        _state.update { prevState ->
-            if (prevState is EditNoteScreenState.Editing) {
-                prevState.note.content.toMutableList().apply {
-                    if (index in indices &&
-                        get(index) is ContentItem.Image
-                    ) {
-                        removeAt(index)
-                    }
-
-                    if (lastOrNull() !is ContentItem.Text) {
-                        add(ContentItem.Text(""))
-                    }
-                }.let {
-                    val newNote = prevState.note.copy(content = it)
-                    prevState.copy(
-                        note = newNote,
-                        uiContent = it.toUiContent()
-                    )
+        updateNote(
+            StructureChanged
+        ) { note ->
+            note.content.toMutableList().apply {
+                if (index in indices &&
+                    get(index) is Image
+                ) {
+                    removeAt(index)
                 }
-            } else {
-                prevState
+
+                if (lastOrNull() !is Text) {
+                    add(ContentItem.Text(""))
+                }
+            }.let {
+                val newNote = note.copy(content = it)
+                newNote
             }
         }
     }
 
     private fun applySearch(query: String) {
         _state.update { state ->
-            if (state is EditNoteScreenState.Editing &&
-                state.searchState is SearchState.Active
+            if (state is Editing &&
+                state.searchState is Active
             ) {
                 state.copy(
                     searchState = state.searchState.copy(
@@ -371,24 +489,18 @@ class EditNoteViewModel @AssistedInject constructor(
     }
 
     private fun changeBackground(backgroundColor: NoteBackgroundColor) {
-        _state.update { state ->
-            if (state is EditNoteScreenState.Editing) {
-
-                val newNote = state.note.copy(
-                    backgroundColor = backgroundColor
-                )
-                state.copy(note = newNote)
-            } else state
-        }
+        updateNote(
+            MetadataOnly
+        ) { note -> note.copy(backgroundColor = backgroundColor) }
     }
 
     private suspend fun saveIfNeeded() {
-        val state = _state.value as? EditNoteScreenState.Editing ?: return
+        val state = _state.value as? Editing ?: return
         if (state.note == lastSavedNote) return
-        if (state.isSaveEnabled)
+        if (!state.isSaveEnabled) return //TODO("Error popup")
         state.run {
             val content = note.content.filter {
-                it !is ContentItem.Text || it.text.isNotBlank()
+                it !is Text || it.text.isNotBlank()
             }
             if (isNewNote) {
                 val newNoteId = addNoteUseCase(
@@ -400,7 +512,7 @@ class EditNoteViewModel @AssistedInject constructor(
                 val savedNote = note.copy(id = newNoteId)
 
                 _state.update {
-                    (it as EditNoteScreenState.Editing).copy(
+                    (it as Editing).copy(
                         note = savedNote
                     )
                 }
@@ -423,7 +535,7 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private fun deleteNote() {
         viewModelScope.launch {
-            (_state.value as? EditNoteScreenState.Editing)?.apply {
+            (_state.value as? Editing)?.apply {
                 deleteNoteUseCase(note.id)
                 _events.send(EditNoteEvent.NavigateBack)
             }
@@ -439,13 +551,20 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private fun switchPinStatus() {
         viewModelScope.launch {
-            _state.update { prevState ->
-                if (prevState is EditNoteScreenState.Editing) {
-                    switchPinnedStatusUseCase(prevState.note.id)
-                    val newNote = prevState.note.copy(isPinned = !prevState.note.isPinned)
-                    prevState.copy(note = newNote)
+            val state = _state.value as? Editing
+                ?: return@launch
+
+            switchPinnedStatusUseCase(state.note.id)
+
+            _state.update { state ->
+                if (state is Editing) {
+                    state.copy(
+                        note = state.note.copy(
+                            isPinned = !state.note.isPinned
+                        )
+                    )
                 } else {
-                    prevState
+                    state
                 }
             }
         }
@@ -453,8 +572,8 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private fun openSearch() {
         _state.update { state ->
-            if (state is EditNoteScreenState.Editing &&
-                state.searchState is SearchState.Inactive
+            if (state is Editing &&
+                state.searchState is Inactive
             ) {
                 state.copy(
                     searchState = SearchState.Active()
@@ -465,11 +584,11 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private fun closeSearch() {
         _state.update { state ->
-            if (state is EditNoteScreenState.Editing &&
-                state.searchState is SearchState.Active
+            if (state is Editing &&
+                state.searchState is Active
             ) {
                 state.copy(
-                    searchState = SearchState.Inactive,
+                    searchState = Inactive,
                     uiContent = state.uiContent.applySearchHighlights(
                         searchMatches = emptyList(),
                         activeMatchIndex = null
@@ -481,8 +600,8 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private fun selectNextMatch() {
         _state.update { state ->
-            if (state is EditNoteScreenState.Editing &&
-                state.searchState is SearchState.Active &&
+            if (state is Editing &&
+                state.searchState is Active &&
                 state.searchState.hasMatches
             ) {
                 val searchState = state.searchState
@@ -496,8 +615,8 @@ class EditNoteViewModel @AssistedInject constructor(
 
     private fun selectPreviousMatch() {
         _state.update { state ->
-            if (state is EditNoteScreenState.Editing &&
-                state.searchState is SearchState.Active &&
+            if (state is Editing &&
+                state.searchState is Active &&
                 state.searchState.hasMatches
             ) {
                 val searchState = state.searchState
@@ -507,6 +626,28 @@ class EditNoteViewModel @AssistedInject constructor(
                 )
             } else state
         }
+    }
+
+    private fun undo() {
+        commitPendingEdit()
+
+        val currentNote = (_state.value as? Editing)?.note ?: return
+        val restoredNote = history.undo() ?: return
+
+        val focusTarget = determineFocusTarget(currentNote, restoredNote)
+        restoreNote(restoredNote)
+        _events.trySend(EditNoteEvent.RequestFocus(focusTarget))
+    }
+
+    private fun redo() {
+        commitPendingEdit()
+
+        val currentNote = (_state.value as? Editing)?.note ?: return
+        val restoredNote = history.redo() ?: return
+
+        val focusTarget = determineFocusTarget(currentNote, restoredNote)
+        restoreNote(restoredNote)
+        _events.trySend(EditNoteEvent.RequestFocus(focusTarget))
     }
 
     private fun SearchState.Active.nextMatchIndex(): Int =
