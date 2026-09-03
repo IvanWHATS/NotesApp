@@ -56,8 +56,6 @@ import com.whats.notesapp.presentation.components.NoteCard
 import com.whats.notesapp.presentation.components.NoteCardWithImage
 import com.whats.notesapp.presentation.components.SearchBar
 import com.whats.notesapp.presentation.ui.theme.NotesAppTheme
-import com.whats.notesapp.presentation.ui.theme.OtherNotesColors
-import com.whats.notesapp.presentation.ui.theme.PinnedNotesColors
 import com.whats.notesapp.presentation.utils.toColor
 
 
@@ -70,6 +68,7 @@ fun NotesScreen(
 ) {
 
     val state by viewModel.state.collectAsStateWithLifecycle()
+
 
     NotesScreenContent(
         modifier = modifier,
@@ -93,7 +92,7 @@ fun NotesScreenContent(
     val isPinnedEmpty = state.pinnedNotes.isEmpty()
     val isOtherEmpty = state.otherNotes.isEmpty()
     val isSearchActive = state.query.isNotEmpty()
-    val isFirstNote = isPinnedEmpty && isOtherEmpty && !isSearchActive
+    val isFirstNote = !state.isLoading && isPinnedEmpty && isOtherEmpty && !isSearchActive
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Int>()) }
@@ -288,7 +287,7 @@ fun NotesScreenContent(
                     itemsIndexed(
                         items = state.otherNotes,
                         key = { _, note -> note.id }
-                    ) { index, note ->
+                    ) { _, note ->
                         val imageUrl = note.content.filterIsInstance<ContentItem.Image>()
                             .firstOrNull()?.url
                         if (imageUrl == null)
